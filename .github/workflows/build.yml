@@ -9,7 +9,7 @@ on:
       - 'v*.*.*'
 
 jobs:
-  build:
+  build-windows:
     name: Build Windows binary
     runs-on: ubuntu-latest
 
@@ -41,9 +41,64 @@ jobs:
           path: claude-monitor-windows-amd64.exe
           retention-days: 30
 
+  build-linux:
+    name: Build Linux binary
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Install Linux systray runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev gcc
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build for Linux (amd64)
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+          go build \
+            -ldflags="-s -w" \
+            -o claude-monitor-linux-amd64 \
+            .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-monitor-linux-amd64
+          path: claude-monitor-linux-amd64
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-linux]
+
+    steps:
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: claude-monitor-windows-amd64
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: claude-monitor-linux-amd64
+
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: claude-monitor-windows-amd64.exe
+          files: |
+            claude-monitor-windows-amd64.exe
+            claude-monitor-linux-amd64
           generate_release_notes: true

@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 )
 
 // digitFont maps digits '0'..'9' and '%' to a 5x7 pixel bitmap.
@@ -169,7 +170,10 @@ func makeIcon(sessionRemaining, weeklyRemaining int) []byte {
 
 	var pngBuf bytes.Buffer
 	png.Encode(&pngBuf, img)
-	return wrapInICO(pngBuf.Bytes(), size, size)
+	if runtime.GOOS == "windows" {
+		return wrapInICO(pngBuf.Bytes(), size, size)
+	}
+	return pngBuf.Bytes()
 }
 
 // makeGrayIcon returns a 32×32 solid gray ICO used for loading/error states.
@@ -184,5 +188,8 @@ func makeGrayIcon() []byte {
 	}
 	var buf bytes.Buffer
 	png.Encode(&buf, img)
-	return wrapInICO(buf.Bytes(), size, size)
+	if runtime.GOOS == "windows" {
+		return wrapInICO(buf.Bytes(), size, size)
+	}
+	return buf.Bytes()
 }

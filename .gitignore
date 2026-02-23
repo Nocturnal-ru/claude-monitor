@@ -1,0 +1,12 @@
+# Build outputs
+*.exe
+claude-monitor-linux-*
+claude-monitor-darwin-*
+
+# Local config and logs (contain secrets — never commit)
+config.json
+README-config.txt
+*.log
+
+# Go build cache
+vendor/
