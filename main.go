@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,14 +95,15 @@ func onReady() {
 		}
 	}()
 
-	// Auto-update loop
+	// Auto-update loop with jitter to avoid predictable request patterns
 	go func() {
 		time.Sleep(2 * time.Second)
 		doUpdate(mSession, mWeekly, mSonnet)
 
-		ticker := time.NewTicker(updateInterval)
-		defer ticker.Stop()
-		for range ticker.C {
+		for {
+			// ±30 second jitter around updateInterval
+			jitter := time.Duration(rand.Int63n(60)-30) * time.Second
+			time.Sleep(updateInterval + jitter)
 			doUpdate(mSession, mWeekly, mSonnet)
 		}
 	}()
@@ -139,19 +141,8 @@ func doUpdate(mSession, mWeekly, mSonnet *systray.MenuItem) {
 	// Tooltip: compact two numbers
 	systray.SetTooltip(fmt.Sprintf("S:%d%% W:%d%%", sessionPct, weeklyPct))
 
-	// Icon color based on worst metric
-	maxPct := sessionPct
-	if weeklyPct > maxPct {
-		maxPct = weeklyPct
-	}
-	switch {
-	case maxPct >= 80:
-		systray.SetIcon(iconRed)
-	case maxPct >= 50:
-		systray.SetIcon(iconYellow)
-	default:
-		systray.SetIcon(iconGreen)
-	}
+	// Generate two-color icon: left=session remaining, right=weekly remaining
+	systray.SetIcon(makeIcon(100-sessionPct, 100-weeklyPct))
 
 	// Detailed menu items
 	mSession.SetTitle(fmt.Sprintf("Session (5h): %d%% — reset %s",
