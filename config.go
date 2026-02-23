@@ -38,6 +38,33 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// saveFirefoxConfig writes (or updates) config.json with cookies from Firefox.
+// Preserves an existing cf_clearance value if present.
+func saveFirefoxConfig(path, sessionKey, orgID string) error {
+	// Preserve any existing cf_clearance
+	var existing Config
+	if data, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(data, &existing) //nolint — best-effort
+	}
+
+	cfg := Config{
+		SessionKey:  sessionKey,
+		OrgID:       orgID,
+		CfClearance: existing.CfClearance,
+	}
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(strings.TrimSuffix(path, "config.json"), 0755); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
 func createTemplateConfig(path string) error {
 	cfg := Config{
 		SessionKey:  "PASTE_sessionKey_HERE",

@@ -61,20 +61,35 @@ func onReady() {
 
 	systray.AddSeparator()
 	mRefresh := systray.AddMenuItem("Refresh now", "Fetch data now")
+	mFirefox := systray.AddMenuItem("Import from Firefox", "Read cookies from Firefox automatically")
 	mEditCfg := systray.AddMenuItem("Open config", "Edit config.json")
 	mOpenLog := systray.AddMenuItem("Open log", "Open log file")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Close application")
 
-	// Check config
+	// Check config — try auto-importing from Firefox on first run
 	cfg, err := loadConfig(configPath)
 	if err != nil {
-		log.Println("Config not found, creating template:", err)
-		createTemplateConfig(configPath)
-		systray.SetTooltip(appName + ": setup config.json!")
-		mHeader.SetTitle("! Setup config.json first")
-	} else {
-		log.Println("Config loaded, org_id:", cfg.OrgID[:8]+"...")
+		log.Println("Config not ready, trying Firefox auto-import:", err)
+		if sk, org, ferr := findFirefoxCookies(); ferr == nil {
+			if werr := saveFirefoxConfig(configPath, sk, org); werr == nil {
+				log.Println("Config auto-imported from Firefox")
+				mHeader.SetTitle("✓ Cookies imported from Firefox!")
+				cfg, err = loadConfig(configPath)
+			} else {
+				log.Println("Failed to save Firefox config:", werr)
+			}
+		} else {
+			log.Println("Firefox auto-import failed:", ferr)
+		}
+		if err != nil {
+			createTemplateConfig(configPath)
+			systray.SetTooltip(appName + ": setup config.json!")
+			mHeader.SetTitle("! Setup config.json first")
+		}
+	}
+	if cfg != nil {
+		log.Println("Config loaded, org_id:", cfg.OrgID[:min(8, len(cfg.OrgID))]+"...")
 	}
 
 	// Menu click handlers
@@ -84,6 +99,27 @@ func onReady() {
 			case <-mRefresh.ClickedCh:
 				log.Println("Manual refresh")
 				doUpdate(mSession, mWeekly, mSonnet)
+			case <-mFirefox.ClickedCh:
+				log.Println("Importing cookies from Firefox")
+				mFirefox.SetTitle("Importing...")
+				if sk, org, err := findFirefoxCookies(); err == nil {
+					if werr := saveFirefoxConfig(configPath, sk, org); werr == nil {
+						log.Println("Firefox cookies saved to config")
+						mFirefox.SetTitle("Import from Firefox ✓")
+						doUpdate(mSession, mWeekly, mSonnet)
+					} else {
+						log.Println("Failed to save config:", werr)
+						mFirefox.SetTitle("Import from Firefox ✗")
+					}
+				} else {
+					log.Println("Firefox import failed:", err)
+					mFirefox.SetTitle("Import from Firefox ✗")
+				}
+				// Reset title after a few seconds
+				go func() {
+					time.Sleep(4 * time.Second)
+					mFirefox.SetTitle("Import from Firefox")
+				}()
 			case <-mEditCfg.ClickedCh:
 				openFile(configPath)
 			case <-mOpenLog.ClickedCh:
