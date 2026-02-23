@@ -26,26 +26,33 @@ var digitFont = map[rune][7]uint8{
 	'%': {0b11000, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b00011},
 }
 
+const (
+	iconSize = 64
+	fontScale = 2 // each font pixel becomes 2x2
+	glyphW   = 5 * fontScale
+	glyphH   = 7 * fontScale
+	glyphGap = 1 * fontScale
+)
+
 // levelColor returns the background color for a given remaining-% value.
-// green ≥ 50%, yellow 20–49%, red < 20%.
+// green >= 50%, amber 20-49%, red < 20%.
 func levelColor(remaining int) color.RGBA {
 	switch {
 	case remaining >= 50:
-		return color.RGBA{R: 0x22, G: 0xc5, B: 0x5e, A: 0xff} // green
+		return color.RGBA{R: 0x2e, G: 0xcc, B: 0x71, A: 0xff} // green
 	case remaining >= 20:
-		return color.RGBA{R: 0xf5, G: 0xa6, B: 0x23, A: 0xff} // amber
+		return color.RGBA{R: 0xf3, G: 0x9c, B: 0x12, A: 0xff} // amber
 	default:
-		return color.RGBA{R: 0xe5, G: 0x39, B: 0x35, A: 0xff} // red
+		return color.RGBA{R: 0xe7, G: 0x4c, B: 0x3c, A: 0xff} // red
 	}
 }
 
-// textWidth returns the pixel width of s rendered with the bitmap font.
-// Each glyph is 5px wide + 1px gap, minus trailing gap.
+// textWidth returns the pixel width of s rendered with the scaled bitmap font.
 func textWidth(s string) int {
 	if len(s) == 0 {
 		return 0
 	}
-	return len(s)*6 - 1
+	return len(s)*(glyphW+glyphGap) - glyphGap
 }
 
 // startXInHalf returns the x offset to center text in a half of the icon.
@@ -57,29 +64,52 @@ func startXInHalf(halfW int, s string) int {
 	return x
 }
 
-// drawText renders s onto img starting at (x, y) using white pixels.
-func drawText(img *image.RGBA, s string, x, y int) {
+// drawTextOutlined renders s onto img at (x, y) with a dark outline for contrast.
+// Draws dark outline at 4 cardinal offsets, then white text on top.
+func drawTextOutlined(img *image.RGBA, s string, x, y int) {
+	outline := color.RGBA{R: 0x00, G: 0x00, B: 0x00, A: 0xc0}
 	white := color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+
+	// Outline offsets (N, S, E, W)
+	offsets := [][2]int{{0, -1}, {0, 1}, {-1, 0}, {1, 0}}
+	for _, off := range offsets {
+		drawTextRaw(img, s, x+off[0], y+off[1], outline)
+	}
+	// White foreground
+	drawTextRaw(img, s, x, y, white)
+}
+
+// drawTextRaw renders s onto img at (x, y) using the given color and 2x scale.
+func drawTextRaw(img *image.RGBA, s string, x, y int, c color.RGBA) {
 	cx := x
 	for _, ch := range s {
 		glyph, ok := digitFont[ch]
 		if !ok {
-			cx += 6
+			cx += glyphW + glyphGap
 			continue
 		}
 		for row, bits := range glyph {
 			for col := 0; col < 5; col++ {
 				if bits&(1<<uint(4-col)) != 0 {
-					img.SetRGBA(cx+col, y+row, white)
+					// Draw 2x2 block for each font pixel
+					for dy := 0; dy < fontScale; dy++ {
+						for dx := 0; dx < fontScale; dx++ {
+							px := cx + col*fontScale + dx
+							py := y + row*fontScale + dy
+							if px >= 0 && px < iconSize && py >= 0 && py < iconSize {
+								img.SetRGBA(px, py, c)
+							}
+						}
+					}
 				}
 			}
 		}
-		cx += 6
+		cx += glyphW + glyphGap
 	}
 }
 
 // formatPct formats a remaining percentage for display.
-// 0–99 → "N%", 100 → "100" (no % to save space).
+// 0-99 -> "N%", 100 -> "100" (no % to save space).
 func formatPct(pct int) string {
 	if pct < 0 {
 		pct = 0
@@ -132,64 +162,81 @@ func wrapInICO(pngData []byte, width, height int) []byte {
 	return buf
 }
 
-// makeIcon generates a 32×32 ICO showing session and weekly remaining percentages.
+// makeIcon generates a 64x64 icon showing session and weekly remaining percentages.
 // Left half = sessionRemaining, right half = weeklyRemaining.
-// Colors: green ≥50%, amber 20–49%, red <20%.
+// Colors: green >= 50%, amber 20-49%, red < 20%.
+// Text is rendered with a dark outline for readability.
 func makeIcon(sessionRemaining, weeklyRemaining int) []byte {
-	const size = 32
-	const half = size / 2
+	const half = iconSize / 2
 
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	img := image.NewRGBA(image.Rect(0, 0, iconSize, iconSize))
 
 	sessionColor := levelColor(sessionRemaining)
 	weeklyColor := levelColor(weeklyRemaining)
 
-	for y := 0; y < size; y++ {
+	// Fill background halves
+	for y := 0; y < iconSize; y++ {
 		for x := 0; x < half; x++ {
 			img.SetRGBA(x, y, sessionColor)
 		}
-		for x := half; x < size; x++ {
+		for x := half; x < iconSize; x++ {
 			img.SetRGBA(x, y, weeklyColor)
 		}
 	}
 
-	// Draw a 1px vertical divider in semi-transparent black
-	divider := color.RGBA{R: 0, G: 0, B: 0, A: 0x60}
-	for y := 0; y < size; y++ {
+	// Draw 1px dark border around the icon
+	border := color.RGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x80}
+	for i := 0; i < iconSize; i++ {
+		img.SetRGBA(i, 0, border)              // top
+		img.SetRGBA(i, iconSize-1, border)      // bottom
+		img.SetRGBA(0, i, border)              // left
+		img.SetRGBA(iconSize-1, i, border)      // right
+	}
+
+	// Draw 1px vertical divider in semi-transparent black
+	divider := color.RGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x60}
+	for y := 0; y < iconSize; y++ {
 		img.SetRGBA(half-1, y, divider)
 		img.SetRGBA(half, y, divider)
 	}
 
-	// Render text centered vertically: (32 - 7) / 2 = 12
-	const textY = 12
+	// Render text centered vertically: (64 - 14) / 2 = 25
+	textY := (iconSize - glyphH) / 2
 	sessionStr := formatPct(sessionRemaining)
 	weeklyStr := formatPct(weeklyRemaining)
 
-	drawText(img, sessionStr, startXInHalf(half-1, sessionStr), textY)
-	drawText(img, weeklyStr, half+1+startXInHalf(half-1, weeklyStr), textY)
+	drawTextOutlined(img, sessionStr, 1+startXInHalf(half-2, sessionStr), textY)
+	drawTextOutlined(img, weeklyStr, half+1+startXInHalf(half-2, weeklyStr), textY)
 
 	var pngBuf bytes.Buffer
 	png.Encode(&pngBuf, img)
 	if runtime.GOOS == "windows" {
-		return wrapInICO(pngBuf.Bytes(), size, size)
+		return wrapInICO(pngBuf.Bytes(), iconSize, iconSize)
 	}
 	return pngBuf.Bytes()
 }
 
-// makeGrayIcon returns a 32×32 solid gray ICO used for loading/error states.
+// makeGrayIcon returns a 64x64 solid gray icon used for loading/error states.
 func makeGrayIcon() []byte {
-	const size = 32
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	img := image.NewRGBA(image.Rect(0, 0, iconSize, iconSize))
 	gray := color.RGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
+	for y := 0; y < iconSize; y++ {
+		for x := 0; x < iconSize; x++ {
 			img.SetRGBA(x, y, gray)
 		}
+	}
+	// Dark border
+	border := color.RGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x80}
+	for i := 0; i < iconSize; i++ {
+		img.SetRGBA(i, 0, border)
+		img.SetRGBA(i, iconSize-1, border)
+		img.SetRGBA(0, i, border)
+		img.SetRGBA(iconSize-1, i, border)
 	}
 	var buf bytes.Buffer
 	png.Encode(&buf, img)
 	if runtime.GOOS == "windows" {
-		return wrapInICO(buf.Bytes(), size, size)
+		return wrapInICO(buf.Bytes(), iconSize, iconSize)
 	}
 	return buf.Bytes()
 }

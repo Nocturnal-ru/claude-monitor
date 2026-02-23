@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -21,6 +23,10 @@ const (
 var (
 	configPath string
 	logFile    *os.File
+
+	// cancelUpdate cancels the currently running doUpdate (if any).
+	cancelUpdate context.CancelFunc
+	updateMu     sync.Mutex
 )
 
 func main() {
@@ -71,8 +77,8 @@ func onReady() {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		log.Println("Config not ready, trying Firefox auto-import:", err)
-		if sk, org, ferr := findFirefoxCookies(); ferr == nil {
-			if werr := saveFirefoxConfig(configPath, sk, org); werr == nil {
+		if sk, org, cfc, ferr := findFirefoxCookies(); ferr == nil {
+			if werr := saveFirefoxConfig(configPath, sk, org, cfc); werr == nil {
 				log.Println("Config auto-imported from Firefox")
 				mHeader.SetTitle("✓ Cookies imported from Firefox!")
 				cfg, err = loadConfig(configPath)
@@ -92,21 +98,34 @@ func onReady() {
 		log.Println("Config loaded, org_id:", cfg.OrgID[:min(8, len(cfg.OrgID))]+"...")
 	}
 
+	// startUpdate cancels any in-flight update and starts a new one in a goroutine.
+	startUpdate := func() {
+		updateMu.Lock()
+		if cancelUpdate != nil {
+			cancelUpdate()
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancelUpdate = cancel
+		updateMu.Unlock()
+
+		go doUpdate(ctx, mSession, mWeekly, mSonnet)
+	}
+
 	// Menu click handlers
 	go func() {
 		for {
 			select {
 			case <-mRefresh.ClickedCh:
 				log.Println("Manual refresh")
-				doUpdate(mSession, mWeekly, mSonnet)
+				startUpdate()
 			case <-mFirefox.ClickedCh:
 				log.Println("Importing cookies from Firefox")
 				mFirefox.SetTitle("Importing...")
-				if sk, org, err := findFirefoxCookies(); err == nil {
-					if werr := saveFirefoxConfig(configPath, sk, org); werr == nil {
+				if sk, org, cfc, err := findFirefoxCookies(); err == nil {
+					if werr := saveFirefoxConfig(configPath, sk, org, cfc); werr == nil {
 						log.Println("Firefox cookies saved to config")
 						mFirefox.SetTitle("Import from Firefox ✓")
-						doUpdate(mSession, mWeekly, mSonnet)
+						startUpdate()
 					} else {
 						log.Println("Failed to save config:", werr)
 						mFirefox.SetTitle("Import from Firefox ✗")
@@ -126,6 +145,11 @@ func onReady() {
 				dir := filepath.Dir(configPath)
 				openFile(filepath.Join(dir, "claude-monitor.log"))
 			case <-mQuit.ClickedCh:
+				updateMu.Lock()
+				if cancelUpdate != nil {
+					cancelUpdate()
+				}
+				updateMu.Unlock()
 				systray.Quit()
 			}
 		}
@@ -134,13 +158,13 @@ func onReady() {
 	// Auto-update loop with jitter to avoid predictable request patterns
 	go func() {
 		time.Sleep(2 * time.Second)
-		doUpdate(mSession, mWeekly, mSonnet)
+		startUpdate()
 
 		for {
 			// ±30 second jitter around updateInterval
 			jitter := time.Duration(rand.Int63n(60)-30) * time.Second
 			time.Sleep(updateInterval + jitter)
-			doUpdate(mSession, mWeekly, mSonnet)
+			startUpdate()
 		}
 	}()
 }
@@ -152,7 +176,7 @@ func onExit() {
 	}
 }
 
-func doUpdate(mSession, mWeekly, mSonnet *systray.MenuItem) {
+func doUpdate(ctx context.Context, mSession, mWeekly, mSonnet *systray.MenuItem) {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		log.Println("Config error:", err)
@@ -162,8 +186,27 @@ func doUpdate(mSession, mWeekly, mSonnet *systray.MenuItem) {
 		return
 	}
 
-	usage, err := fetchUsage(cfg)
+	usage, err := fetchUsage(ctx, cfg)
+
+	// On Cloudflare 403, try to auto-refresh cookies from Firefox and retry once
+	if err != nil && isCloudflare(err) {
+		log.Println("Cloudflare block detected, attempting Firefox cookie refresh...")
+		if sk, org, cfc, ferr := findFirefoxCookies(); ferr == nil && cfc != "" {
+			if werr := saveFirefoxConfig(configPath, sk, org, cfc); werr == nil {
+				log.Println("cf_clearance refreshed from Firefox, retrying...")
+				cfg, _ = loadConfig(configPath)
+				usage, err = fetchUsage(ctx, cfg)
+			}
+		} else if ferr != nil {
+			log.Println("Firefox cookie refresh failed:", ferr)
+		}
+	}
+
 	if err != nil {
+		if ctx.Err() != nil {
+			// Context was cancelled (quit or new refresh) — don't update UI
+			return
+		}
 		log.Println("API error:", err)
 		systray.SetIcon(iconGray)
 		systray.SetTooltip(appName + ": API error")

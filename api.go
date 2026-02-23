@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,13 @@ var httpClient = &http.Client{
 
 var retryDelays = []time.Duration{10 * time.Second, 30 * time.Second, 60 * time.Second}
 
+// ErrCloudflare indicates that the request was blocked by Cloudflare (HTTP 403).
+type ErrCloudflare struct {
+	Msg string
+}
+
+func (e *ErrCloudflare) Error() string { return e.Msg }
+
 func isRetryable(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "HTTP 403") ||
@@ -47,15 +55,26 @@ func isRetryable(err error) bool {
 		strings.Contains(msg, "EOF")
 }
 
-func fetchUsage(cfg *Config) (*UsageResponse, error) {
+func isCloudflare(err error) bool {
+	if _, ok := err.(*ErrCloudflare); ok {
+		return true
+	}
+	return false
+}
+
+func fetchUsage(ctx context.Context, cfg *Config) (*UsageResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt <= len(retryDelays); attempt++ {
 		if attempt > 0 {
 			delay := retryDelays[attempt-1]
 			log.Printf("Retry %d/%d after %v (error: %v)", attempt, len(retryDelays), delay, lastErr)
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
 		}
-		usage, err := doFetch(cfg)
+		usage, err := doFetch(ctx, cfg)
 		if err == nil {
 			return usage, nil
 		}
@@ -64,13 +83,17 @@ func fetchUsage(cfg *Config) (*UsageResponse, error) {
 			return nil, err
 		}
 	}
+	// Wrap the last error to preserve Cloudflare detection
+	if isCloudflare(lastErr) {
+		return nil, &ErrCloudflare{Msg: fmt.Sprintf("all %d attempts failed: %s", len(retryDelays)+1, lastErr)}
+	}
 	return nil, fmt.Errorf("all %d attempts failed: %w", len(retryDelays)+1, lastErr)
 }
 
-func doFetch(cfg *Config) (*UsageResponse, error) {
+func doFetch(ctx context.Context, cfg *Config) (*UsageResponse, error) {
 	url := fmt.Sprintf("https://claude.ai/api/organizations/%s/usage", cfg.OrgID)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -110,7 +133,12 @@ func doFetch(cfg *Config) (*UsageResponse, error) {
 		if len(bodyStr) > 200 {
 			bodyStr = bodyStr[:200] + "..."
 		}
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, bodyStr)
+		msg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, bodyStr)
+		// Detect Cloudflare challenge page
+		if resp.StatusCode == 403 && strings.Contains(string(body), "Just a moment") {
+			return nil, &ErrCloudflare{Msg: msg}
+		}
+		return nil, fmt.Errorf("%s", msg)
 	}
 
 	var usage UsageResponse

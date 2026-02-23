@@ -13,16 +13,16 @@ import (
 )
 
 // findFirefoxCookies searches the default Firefox profile for claude.ai cookies.
-// Returns sessionKey and lastActiveOrg if found.
-func findFirefoxCookies() (sessionKey, orgID string, err error) {
+// Returns sessionKey, lastActiveOrg, and cf_clearance if found.
+func findFirefoxCookies() (sessionKey, orgID, cfClearance string, err error) {
 	profilesDir, err := findFirefoxProfilesDir()
 	if err != nil {
-		return "", "", fmt.Errorf("finding Firefox profiles: %w", err)
+		return "", "", "", fmt.Errorf("finding Firefox profiles: %w", err)
 	}
 
 	profileDir, err := findDefaultProfile(profilesDir)
 	if err != nil {
-		return "", "", fmt.Errorf("finding default Firefox profile: %w", err)
+		return "", "", "", fmt.Errorf("finding default Firefox profile: %w", err)
 	}
 
 	log.Println("Firefox profile:", profileDir)
@@ -30,21 +30,22 @@ func findFirefoxCookies() (sessionKey, orgID string, err error) {
 	dbPath := filepath.Join(profileDir, "cookies.sqlite")
 	cookies, err := readClaudeAICookies(dbPath)
 	if err != nil {
-		return "", "", fmt.Errorf("reading Firefox cookies: %w", err)
+		return "", "", "", fmt.Errorf("reading Firefox cookies: %w", err)
 	}
 
 	sessionKey = cookies["sessionKey"]
 	orgID = cookies["lastActiveOrg"]
+	cfClearance = cookies["cf_clearance"]
 
 	if sessionKey == "" {
-		return "", "", fmt.Errorf("sessionKey not found — are you logged in to claude.ai in Firefox?")
+		return "", "", "", fmt.Errorf("sessionKey not found — are you logged in to claude.ai in Firefox?")
 	}
 	if orgID == "" {
-		return "", "", fmt.Errorf("lastActiveOrg not found in Firefox cookies")
+		return "", "", "", fmt.Errorf("lastActiveOrg not found in Firefox cookies")
 	}
 
-	log.Printf("Firefox cookies found: org_id=%s...", orgID[:min(8, len(orgID))])
-	return sessionKey, orgID, nil
+	log.Printf("Firefox cookies found: org_id=%s... cf_clearance=%v", orgID[:min(8, len(orgID))], cfClearance != "")
+	return sessionKey, orgID, cfClearance, nil
 }
 
 // findFirefoxProfilesDir returns the Firefox base directory for the current OS.
