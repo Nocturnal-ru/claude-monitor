@@ -132,6 +132,10 @@ git push origin v1.0.1
 The release will appear at https://github.com/Nocturnal-ru/claude-monitor/releases with both
 `claude-monitor-windows-amd64.exe` and `claude-monitor-linux-amd64` attached.
 
+> **Note:** If the release job fails with "Resource not accessible by integration",
+> go to **Settings > Actions > General > Workflow permissions** and select
+> **"Read and write permissions"**.
+
 ---
 
 ## Notes
